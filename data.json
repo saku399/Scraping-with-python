@@ -1,0 +1,21 @@
+{
+  "project": "Example",
+  "version": 1,
+  "members": [
+    {
+      "name": "Alice",
+      "skills": [
+        "python",
+        "web"
+      ]
+    },
+    {
+      "name": "Bob",
+      "skills": [
+        "cpp"
+      ]
+    }
+  ],
+  "active": true,
+  "note": "日本語もOK"
+}
