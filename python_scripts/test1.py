@@ -61,3 +61,111 @@ def nearest_heading_and_desc(table) -> tuple[str, str]:
                 break
 
     return name, desc
+
+def strip_label_prefix(value: str, label_candidates: list[str]) -> str:
+    if not value:
+        return value
+    s = clean(value)
+    for lab in label_candidates:
+        if not lab:
+            continue
+
+        lab_clean = clean(lab).rstrip(":")
+        pattern = re.compile(rf"^(?:{re.escape(lab_clean)})\s*:\s*", re.IGNORECASE)
+        new_s = re.sub(pattern, "", s, count=1)
+        if new_s != s:
+            return new_s.strip()
+        
+    return re.sub(r"^\s*description\s*:\s*", "", s, flags=re.IGNORECASE).strip()
+
+
+
+def guess_columns(header_cells: list[str]) -> dict:
+    cols = { "description": None, "price": None}
+    for i, h in enumerate(header_cells):
+        hl = h.lower()
+        if cols["description"] is None and any(k in hl for k in ["description", "desc"]):
+            cols["description"] = i
+        if cols["price"] is None and "price" in hl:
+            cols["price"] = i
+    return cols
+
+def extract_price(text: str) -> str | None:
+    m = re.search(r"([€£$])?\s*([0-9][0-9,]*(?:\.[0-9]{1,2})?)", text)
+    if not m:
+        return None
+    return m.group(2).replace(",", "")
+
+def parse_groups_from_html(html: str, base_url: str | None = None) -> list[dict]:
+    soup = BeautifulSoup(html, "html.parser")
+    groups = []
+
+    for table in soup.find_all("table"):
+        headers = [clean(th.get_text(" ")) for th in table.find_all("th")]
+        if not headers:
+            continue
+        if not any("price" in h.lower() for h in headers):
+            continue
+
+        colmap = guess_columns(headers)
+
+        group_name, group_desc = nearest_heading_and_desc(table)
+        subproducts = []
+
+        for tr in table.find_all("tr"):
+            tds = tr.find_all("td")
+            if not tds:
+                continue
+            if colmap["description"] is not None and colmap["description"] < len(tds):
+                name = clean(tds[colmap["description"]].get_text(" "))
+                desc_header = headers[colmap["description"]] if colmap["description"] is not None else None
+                name = strip_label_prefix(name, [desc_header, "Description", "Desc"])
+            else:
+                name = clean(tds[min(1, len(tds)-1)].get_text(" "))
+                name = strip_label_prefix(name, ["Description", "Desc"])
+
+            price_text = ""
+            if colmap["price"] is not None and colmap["price"] < len(tds):
+                price_text = clean(tds[colmap["price"]].get_text(" "))
+            else:
+                price_text = clean(tds[-1].get_text(" "))
+            price = extract_price(price_text)
+
+            if not name or price is None:
+                continue
+
+            subproducts.append({"name": name, "price": price})
+
+        if subproducts:
+            groups.append({
+                "name": group_name or "",
+                "desc": group_desc or "",
+                "subproducts": subproducts
+            })
+        
+    return groups
+
+def main():
+    ap = argparse.ArgumentParser(description="製品一覧の“表”から {name, desc, subproducts{name, price}} をJSON化")
+    src = ap.add_mutually_exclusive_group(required=True)
+    src.add_argument("--url", help="対象ページのURL（403になる場合は --file を使う）")
+    src.add_argument("--file", help="保存したHTMLファイルのパス（ブラウザで『ページを保存』）")
+    ap.add_argument("-o", "--out", default="products.json", help="出力JSON（既定: products.json）")
+    ap.add_argument("--delay", type=float, default=0.0, help="将来拡張用：待機秒（今は未使用）")
+    args = ap.parse_args()
+
+    if args.url:
+        html = fetch_html(args.url)
+        base = None
+    else: 
+        html = Path(args.file).read_text(encoding="utf-8", errors="ignore")
+        base = None
+
+    groups = parse_groups_from_html(html, base_url=base)
+    doc = { "products": groups }
+    Path(args.out).write_text(json.dumps(doc, ensure_ascii=False, indent=2), encoding="utf-8")
+    print(f"[OK] saved -> {Path(args.out).resolve()} (groups={len(groups)})")
+
+if __name__=="__main__":
+    main()
+        
