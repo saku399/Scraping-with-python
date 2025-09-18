@@ -1,7 +1,6 @@
 import argparse, json, re, time
 from pathlib import Path
 from urllib.parse import urlparse, urljoin
-
 import requests
 from bs4 import BeautifulSoup
 
@@ -13,17 +12,15 @@ HEADERS = {
     ),
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
     "Accept-Language": "en-CA,en-US;q=0.9,en;q=0.8,fr-CA;q=0.8,fr;q=0.7,ja;q=0.6",
-    "Upgrade-Insecure-Requests": "1",
+    "Upgrade-Insecure-Requests": "1",    
 }
 
 def clean(s: str) -> str:
-    return re.sub(r"\s+", " ", s or "").strip()
+    return re.sub(r"\s+", " ", s or"").strip()
 
-def fetch_html(url: str, timeout: int = 25) -> str:
-    """URLからHTML取得（403が出るサイトはローカルHTMLで）"""
+def fetch_html(url: str, timeout : int = 25) -> str:
     with requests.Session() as s:
         s.headers.update(HEADERS)
-        # ルートを先に踏んでクッキー（気休めだけど礼儀）
         try:
             p = urlparse(url); s.get(f"{p.scheme}://{p.netloc}/", timeout=timeout)
         except Exception:
@@ -33,26 +30,17 @@ def fetch_html(url: str, timeout: int = 25) -> str:
         if not r.encoding:
             r.encoding = r.apparent_encoding
         return r.text
-
+    
 def nearest_heading_and_desc(table) -> tuple[str, str]:
-    """
-    table の直前にある見出し(h1-h5)をグループ名に、
-    説明は優先的に <div class="description"> を採用。
-    無ければ見出し〜tableの間の <p> を説明として拾う。
-    """
     name, desc = "", ""
 
-    # --- 1) まず .description を優先して探す（直近のものだけ採用） ---
-    # 「この description の“次に現れる table”が今の table」であることを確認して関連性を担保
     cand = table.find_previous("div", class_=lambda cs: cs and "description" in cs)
     while cand is not None:
         next_tbl = cand.find_next("table")
         if next_tbl is table:
             desc = clean(cand.get_text(" "))
-            break
         cand = cand.find_previous("div", class_=lambda cs: cs and "description" in cs)
 
-    # --- 2) 見出しを探す（h1〜h5の一番近いもの） ---
     prev = table
     while True:
         prev = prev.find_previous(["h1", "h2", "h3", "h4", "h5", "p", "div"])
@@ -61,7 +49,7 @@ def nearest_heading_and_desc(table) -> tuple[str, str]:
         tag = (prev.name or "").lower()
         if tag in {"h1", "h2", "h3", "h4", "h5"}:
             name = clean(prev.get_text(" "))
-            # まだ desc が空なら、見出し〜table の間の <p> をつなげて説明に
+
             if not desc:
                 texts = []
                 for sib in prev.next_siblings:
@@ -69,16 +57,31 @@ def nearest_heading_and_desc(table) -> tuple[str, str]:
                         break
                     if getattr(sib, "name", None) == "p":
                         texts.append(clean(sib.get_text(" ")))
-                desc = clean(" ".join(t for t in texts if t))
-            break
+                    desc = clean(" ".join(t for t in texts if t))
+                break
 
     return name, desc
+
+def strip_label_prefix(value: str, label_candidates: list[str]) -> str:
+    if not value:
+        return value
+    s = clean(value)
+    for lab in label_candidates:
+        if not lab:
+            continue
+
+        lab_clean = clean(lab).rstrip(":")
+        pattern = re.compile(rf"^(?:{re.escape(lab_clean)})\s*:\s*", re.IGNORECASE)
+        new_s = re.sub(pattern, "", s, count=1)
+        if new_s != s:
+            return new_s.strip()
+        
+    return re.sub(r"^\s*description\s*:\s*", "", s, flags=re.IGNORECASE).strip()
 
 
 
 def guess_columns(header_cells: list[str]) -> dict:
-    """ヘッダから 'description' と 'price' の列インデックスを推定"""
-    cols = { "description": None, "price": None }
+    cols = { "description": None, "price": None}
     for i, h in enumerate(header_cells):
         hl = h.lower()
         if cols["description"] is None and any(k in hl for k in ["description", "desc"]):
@@ -88,7 +91,6 @@ def guess_columns(header_cells: list[str]) -> dict:
     return cols
 
 def extract_price(text: str) -> str | None:
-    """$125.40 → 125.40 など数字部分を取り出して文字列で返す"""
     m = re.search(r"([€£$])?\s*([0-9][0-9,]*(?:\.[0-9]{1,2})?)", text)
     if not m:
         return None
@@ -98,17 +100,14 @@ def parse_groups_from_html(html: str, base_url: str | None = None) -> list[dict]
     soup = BeautifulSoup(html, "html.parser")
     groups = []
 
-    # 候補となる「価格列を含むテーブル」を総当たり
     for table in soup.find_all("table"):
-        # th が無いテーブルはスキップ
         headers = [clean(th.get_text(" ")) for th in table.find_all("th")]
         if not headers:
             continue
         if not any("price" in h.lower() for h in headers):
-            continue  # 価格列が無ければ商品表ではないとみなす
+            continue
 
         colmap = guess_columns(headers)
-        # ヘッダが特殊でも、各行の最後のセルから価格を拾うフォールバックあり
 
         group_name, group_desc = nearest_heading_and_desc(table)
         subproducts = []
@@ -117,13 +116,14 @@ def parse_groups_from_html(html: str, base_url: str | None = None) -> list[dict]
             tds = tr.find_all("td")
             if not tds:
                 continue
-            # 説明セル
             if colmap["description"] is not None and colmap["description"] < len(tds):
                 name = clean(tds[colmap["description"]].get_text(" "))
+                desc_header = headers[colmap["description"]] if colmap["description"] is not None else None
+                name = strip_label_prefix(name, [desc_header, "Description", "Desc"])
             else:
-                # 2列目を説明と仮定（Cat#/Description/Pack/Price…という並び想定）
                 name = clean(tds[min(1, len(tds)-1)].get_text(" "))
-            # 価格セル
+                name = strip_label_prefix(name, ["Description", "Desc"])
+
             price_text = ""
             if colmap["price"] is not None and colmap["price"] < len(tds):
                 price_text = clean(tds[colmap["price"]].get_text(" "))
@@ -131,7 +131,6 @@ def parse_groups_from_html(html: str, base_url: str | None = None) -> list[dict]
                 price_text = clean(tds[-1].get_text(" "))
             price = extract_price(price_text)
 
-            # 名前が空 or 価格が無い行はスキップ（区切り行など）
             if not name or price is None:
                 continue
 
@@ -143,7 +142,7 @@ def parse_groups_from_html(html: str, base_url: str | None = None) -> list[dict]
                 "desc": group_desc or "",
                 "subproducts": subproducts
             })
-
+        
     return groups
 
 def main():
@@ -157,8 +156,8 @@ def main():
 
     if args.url:
         html = fetch_html(args.url)
-        base = args.url
-    else:
+        base = None
+    else: 
         html = Path(args.file).read_text(encoding="utf-8", errors="ignore")
         base = None
 
@@ -167,5 +166,6 @@ def main():
     Path(args.out).write_text(json.dumps(doc, ensure_ascii=False, indent=2), encoding="utf-8")
     print(f"[OK] saved -> {Path(args.out).resolve()} (groups={len(groups)})")
 
-if __name__ == "__main__":
+if __name__=="__main__":
     main()
+        
