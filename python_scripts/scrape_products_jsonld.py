@@ -3,6 +3,7 @@ from pathlib import Path
 from urllib.parse import urlparse, urljoin
 import requests
 from bs4 import BeautifulSoup
+import hashlib
 
 HEADERS = {
     "User-Agent": (
@@ -125,6 +126,9 @@ def extract_price(text: str) -> str | None:
         return None
     return m.group(2).replace(",", "")
 
+def make_id(text: str) -> str:
+    return "ems-" + hashlib.md5(text.encode()).hexdigest()[:8]
+
 def parse_groups_from_html(html: str, base_url: str | None = None) -> list[dict]:
     soup = BeautifulSoup(html, "html.parser")
     groups = []
@@ -232,6 +236,11 @@ def parse_groups_from_html(html: str, base_url: str | None = None) -> list[dict]
                 "desc": group_desc or "",
                 "subproducts": subproducts
             })
+
+        for product in groups:
+            product["id"] = make_id(product["name"])
+            for sub in subproducts:
+                sub["id"] = make_id(product["name"] + "|" + sub["name"])
 
     return groups
 
